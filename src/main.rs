@@ -66,7 +66,8 @@ where
             .unwrap_or_else(|| Duration::from_secs(0));
 
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
+            let event = event::read()?;
+            if let Event::Key(key) = event {
                 if app.show_kill_confirm {
                     match key.code {
                         KeyCode::Char('y') | KeyCode::Char('Y') => app.confirm_kill(),
@@ -140,10 +141,11 @@ where
                         KeyCode::Char('e') => {
                             let _ = app.export_snapshot();
                         }
-                        KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                            if app.active_tab == 0 && !app.search_query.is_empty() {
-                                app.search_clear();
-                            }
+                        KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                            && app.active_tab == 0
+                            && !app.search_query.is_empty() =>
+                        {
+                            app.search_clear();
                         }
                         _ => {}
                     }

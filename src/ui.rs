@@ -164,8 +164,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let net_in_max = if net_in_max == 0.0 { 1.0 } else { net_in_max };
     f.render_widget(build_chart(format!(" Net IN: {:.2} KB/s ", net_in_avg), &net_in_data, COLOR_GREEN, net_in_max, tc), usage_chunks[2]);
 
-    let disk_total_avg = *app.disk_total_history.back().unwrap_or(&0.0);
-    let disk_total_data = get_chart_data(&app.disk_total_history, usage_chunks[3].width);
+    let disk_total_history: std::collections::VecDeque<f64> = app.disk_read_history.iter()
+        .zip(app.disk_write_history.iter())
+        .map(|(r, w)| r + w)
+        .collect();
+    let disk_total_avg = *disk_total_history.back().unwrap_or(&0.0);
+    let disk_total_data = get_chart_data(&disk_total_history, usage_chunks[3].width);
     let disk_max = disk_total_data.iter().map(|&(_, y)| y).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(1.0);
     let disk_max = if disk_max == 0.0 { 1.0 } else { disk_max };
     f.render_widget(build_chart(format!(" Disk I/O: {:.1} KB/s ", disk_total_avg), &disk_total_data, COLOR_ORANGE, disk_max, tc), usage_chunks[3]);
@@ -205,7 +209,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             let process_header = Row::new(vec!["PID", "User", "Name", "CPU%", "Mem (MB)", "DiskR (KB/s)", "DiskW (KB/s)"])
                 .style(Style::default().fg(resolve(COLOR_PEACH, tc)).add_modifier(Modifier::BOLD))
                 .bottom_margin(1);
-            let rows: Vec<Row> = app.filtered_processes.iter().enumerate().map(|(i, p)| {
+            let rows: Vec<Row> = app.filtered_processes.iter().enumerate().map(|(i, &idx)| {
+                let p = &app.processes[idx];
                 let row_color = if i % 2 == 0 { resolve(COLOR_TEXT, tc) } else { resolve(COLOR_SUBTEXT0, tc) };
                 Row::new(vec![
                     p.pid.to_string(),
@@ -244,7 +249,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             let num_cpus = app.per_cpu_history.len();
             if num_cpus > 0 {
                 let cols = if num_cpus > 8 { 2 } else { 1 };
-                let rows = (num_cpus + cols - 1) / cols;
+                let rows = num_cpus.div_ceil(cols);
                 let col_constraints = vec![Constraint::Percentage(100 / cols as u16); cols];
                 let row_constraints = vec![Constraint::Ratio(1, rows as u32); rows];
                 let grid_chunks = Layout::default().direction(Direction::Horizontal).constraints(col_constraints).split(cpu_detail_chunks[0]);
@@ -303,8 +308,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             let swap_avg = *app.swap_history.back().unwrap_or(&0.0);
             let swap_data = get_chart_data(&app.swap_history, mem_swap_chunks[1].width);
             f.render_widget(build_chart(format!(" Swap: {:.2} GB / {:.2} GB - {:.1}% ", used_swap_gb, total_swap_gb, swap_avg), &swap_data, COLOR_PEACH, 100.0, tc), mem_swap_chunks[1]);
-            let mem_specs_text = vec![format!(" Total Physical RAM: {:.2} GB", total_mem_gb), format!(" Total Configured Swap: {:.2} GB", total_swap_gb)];
-            f.render_widget(Paragraph::new(mem_specs_text.join("\n")).block(create_block(" Memory Capacity ", tc)).style(Style::default().fg(resolve(COLOR_LAVENDER, tc))), mem_swap_chunks[2]);
+            let mem_specs_text = [format!(" Total Physical RAM: {:.2} GB", total_mem_gb), format!(" Total Configured Swap: {:.2} GB", total_swap_gb)].join("\n");
+            f.render_widget(Paragraph::new(mem_specs_text).block(create_block(" Memory Capacity ", tc)).style(Style::default().fg(resolve(COLOR_LAVENDER, tc))), mem_swap_chunks[2]);
         }
         3 => {
             let net_chunks = Layout::default().direction(Direction::Vertical).constraints([Constraint::Percentage(40), Constraint::Percentage(40), Constraint::Percentage(20)]).split(right_chunks[1]);
@@ -435,7 +440,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         let area = centered_rect(30, 25, f.area());
         f.render_widget(Clear, area);
 
-        let menu_items = vec![
+        let menu_items = [
             " 1. CPU Usage ",
             " 2. Memory Usage ",
             " 3. Disk Read ",
@@ -457,7 +462,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             .unwrap_or_default()
             .subsec_millis()) < 500 { "█" } else { " " };
 
-        let search_content = vec![
+        let search_content = [
             String::new(),
             format!("  > {}{}", app.search_query, cursor),
             String::new(),
@@ -480,7 +485,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             .map(|(name, pid)| format!(" \"{}\" (PID: {})", name, pid))
             .unwrap_or_default();
 
-        let confirm_text = vec![
+        let confirm_text = [
             String::new(),
             format!(" Kill process{} ?", process_name),
             String::new(),

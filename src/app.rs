@@ -31,9 +31,8 @@ pub struct App {
     pub network_out_history: VecDeque<f64>,
     pub disk_read_history: VecDeque<f64>,
     pub disk_write_history: VecDeque<f64>,
-    pub disk_total_history: VecDeque<f64>,
     pub processes: Vec<ProcessInfo>,
-    pub filtered_processes: Vec<ProcessInfo>,
+    pub filtered_processes: Vec<usize>,
     pub network_in: u64,
     pub network_out: u64,
     pub load_avg: (f64, f64, f64),
@@ -74,14 +73,15 @@ pub struct ProcessInfo {
 }
 
 fn get_linux_max_cpu_freq() -> String {
-    if let Ok(khz_str) = fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq") {
-        if let Ok(khz) = khz_str.trim().parse::<f64>() {
-            let mhz = khz / 1000.0;
-            if mhz >= 1000.0 {
-                return format!("{:.2} GHz", mhz / 1000.0);
-            } else {
-                return format!("{:.0} MHz", mhz);
-            }
+    if let Some(mhz) = fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
+        .ok()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .map(|khz| khz / 1000.0)
+    {
+        if mhz >= 1000.0 {
+            return format!("{:.2} GHz", mhz / 1000.0);
+        } else {
+            return format!("{:.0} MHz", mhz);
         }
     }
     "Unknown".to_string()
@@ -101,20 +101,20 @@ fn get_linux_cpu_cache() -> (String, String, String) {
 
     for i in 0..5 {
         let base_path = format!("/sys/devices/system/cpu/cpu0/cache/index{}", i);
-        if let Ok(level) = fs::read_to_string(format!("{}/level", base_path)) {
-            if let Ok(size) = fs::read_to_string(format!("{}/size", base_path)) {
-                let lvl = level.trim();
-                let sz = size.trim();
-                match lvl {
-                    "1" => {
-                        if let Ok(k) = sz.replace("K", "").parse::<u32>() {
-                            l1_total_k += k;
-                        }
-                    },
-                    "2" => l2 = sz.to_string(),
-                    "3" => l3 = sz.to_string(),
-                    _ => {}
-                }
+        let level = fs::read_to_string(format!("{}/level", base_path));
+        let size = fs::read_to_string(format!("{}/size", base_path));
+        if let (Ok(level), Ok(size)) = (level, size) {
+            let lvl = level.trim();
+            let sz = size.trim();
+            match lvl {
+                "1" => {
+                    if let Ok(k) = sz.replace("K", "").parse::<u32>() {
+                        l1_total_k += k;
+                    }
+                },
+                "2" => l2 = sz.to_string(),
+                "3" => l3 = sz.to_string(),
+                _ => {}
             }
         }
     }
@@ -159,7 +159,6 @@ impl App {
             network_out_history: VecDeque::with_capacity(1000),
             disk_read_history: VecDeque::with_capacity(1000),
             disk_write_history: VecDeque::with_capacity(1000),
-            disk_total_history: VecDeque::with_capacity(1000),
             processes: Vec::new(),
             filtered_processes: Vec::new(),
             network_in: 0,
@@ -197,11 +196,15 @@ impl App {
     pub fn update_filter(&mut self) {
         let query = self.search_query.to_lowercase();
         self.filtered_processes = if query.is_empty() {
-            self.processes.clone()
+            (0..self.processes.len()).collect()
         } else {
-            self.processes.iter().filter(|p| {
-                p.name.to_lowercase().contains(&query) || p.pid.to_string().contains(&query)
-            }).cloned().collect()
+            self.processes.iter().enumerate().filter_map(|(idx, p)| {
+                if p.name.to_lowercase().contains(&query) || p.pid.to_string().contains(&query) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            }).collect()
         };
 
         let selected = self.table_state.selected().unwrap_or(0);
@@ -277,14 +280,17 @@ impl App {
         if self.disk_read_history.len() > 1000 { self.disk_read_history.pop_front(); }
         self.disk_write_history.push_back(disk_write_kbps);
         if self.disk_write_history.len() > 1000 { self.disk_write_history.pop_front(); }
-        self.disk_total_history.push_back(disk_read_kbps + disk_write_kbps);
-        if self.disk_total_history.len() > 1000 { self.disk_total_history.pop_front(); }
+
+        let user_map: std::collections::HashMap<&sysinfo::Uid, String> = self.users
+            .iter()
+            .map(|user| (user.id(), user.name().to_string()))
+            .collect();
 
         self.processes = self.sys.processes().iter().map(|(pid, process)| {
             let du = process.disk_usage();
             let user = process.user_id()
-                .and_then(|uid| self.users.get_user_by_id(uid))
-                .map(|u| u.name().to_string())
+                .and_then(|uid| user_map.get(uid))
+                .cloned()
                 .unwrap_or_default();
             ProcessInfo {
                 pid: pid.as_u32(),
@@ -298,10 +304,10 @@ impl App {
         }).collect();
 
         match self.sort_by {
-            SortBy::Cpu => self.processes.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap_or(std::cmp::Ordering::Equal)),
-            SortBy::Memory => self.processes.sort_by(|a, b| b.mem.cmp(&a.mem)),
-            SortBy::DiskRead => self.processes.sort_by(|a, b| b.disk_read.cmp(&a.disk_read)),
-            SortBy::DiskWrite => self.processes.sort_by(|a, b| b.disk_write.cmp(&a.disk_write)),
+            SortBy::Cpu => self.processes.sort_unstable_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap_or(std::cmp::Ordering::Equal)),
+            SortBy::Memory => self.processes.sort_unstable_by_key(|b| std::cmp::Reverse(b.mem)),
+            SortBy::DiskRead => self.processes.sort_unstable_by_key(|b| std::cmp::Reverse(b.disk_read)),
+            SortBy::DiskWrite => self.processes.sort_unstable_by_key(|b| std::cmp::Reverse(b.disk_write)),
         }
 
         self.update_filter();
@@ -323,11 +329,9 @@ impl App {
         self.network_out_history.push_back(out_kbps);
         if self.network_out_history.len() > 1000 { self.network_out_history.pop_front(); }
 
-        if let Some(at) = self.export_message_at {
-            if at.elapsed().as_secs() >= 3 {
-                self.export_message = None;
-                self.export_message_at = None;
-            }
+        if self.export_message_at.is_some_and(|at| at.elapsed().as_secs() >= 3) {
+            self.export_message = None;
+            self.export_message_at = None;
         }
     }
 
@@ -354,12 +358,13 @@ impl App {
     }
 
     pub fn kill_selected(&mut self) {
-        if let Some(i) = self.table_state.selected() {
-            if let Some(p) = self.filtered_processes.get(i) {
-                self.pending_kill_pid = Some(p.pid);
-                self.pending_kill_name = Some(p.name.clone());
-                self.show_kill_confirm = true;
-            }
+        if let Some(p) = self.table_state.selected()
+            .and_then(|i| self.filtered_processes.get(i))
+            .and_then(|&idx| self.processes.get(idx))
+        {
+            self.pending_kill_pid = Some(p.pid);
+            self.pending_kill_name = Some(p.name.clone());
+            self.show_kill_confirm = true;
         }
     }
 
