@@ -2,6 +2,22 @@
 name = "resource-monitor"
 version = "0.1.0"
 edition = "2024"
+description = "Terminal resource monitor for Linux"
+authors = ["Aska Erlangga"]
+license = "MIT"
+repository = "https://github.com/askaerlangga/resource-monitor"
+
+[package.metadata.deb]
+maintainer = "Aska Erlangga"
+copyright = "2026, Aska Erlangga"
+extended-description = "A terminal-based resource monitor for Linux with real-time charts for CPU, memory, network, and disk."
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/resource-monitor", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/resource-monitor/README", "644"],
+]
 
 [dependencies]
 anyhow = "1.0.102"
